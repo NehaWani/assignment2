@@ -1,10 +1,12 @@
 package demo;
 
 import java.io.UnsupportedEncodingException;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -13,10 +15,9 @@ import javax.validation.Valid;
 
 import org.apache.tomcat.util.codec.binary.Base64;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import beans.Moderator;
 import beans.Poll;
+
 
 /**
  * Title: CMPE-273 Assignment 2.
@@ -50,11 +52,14 @@ public class ApplicationController {
 	private ModeratorRepository moderatorRespository;
 	@Autowired
 	private PollRepository pollRepository;
+	@Autowired
+	KafkaProducer kafkaProducer;
 	
 	private final AtomicInteger moderator_counter = new AtomicInteger();
 	private final AtomicLong poll_counter = new AtomicLong();
 	TimeZone timezone = TimeZone.getTimeZone("UTC");
 	SimpleDateFormat sdf = new SimpleDateFormat("YYYY-MM-dd'T'hh:mm:ss.SSS'T'");
+	SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
 	
 	/** This method generates a new moderator.
 	 * This is a POST method which is mapped to /moderators, consumes a JSON input and saves an entry in mongodb's 'moderators' collection.
@@ -132,29 +137,30 @@ public class ApplicationController {
 	 * @throws UnsupportedEncodingException
 	 */
 	@RequestMapping(value="/moderators/{moderator_id}/polls", method = RequestMethod.POST, consumes = "application/json", produces = "application/json")
-	public ResponseEntity<LinkedHashMap> createPoll(@PathVariable("moderator_id") Integer mod_id, @RequestBody Poll poll, @RequestHeader(value="Authorization") String authorizationDetail) throws UnsupportedEncodingException{
+	public ResponseEntity<LinkedHashMap<String, Object>> createPoll(@PathVariable("moderator_id") Integer mod_id, @RequestBody Poll poll, @RequestHeader(value="Authorization") String authorizationDetail) throws UnsupportedEncodingException{
 		System.out.println("Creating a poll...");
 		boolean authenticationSuccess = checkAuthorizationDetail(authorizationDetail);
-		LinkedHashMap pollHashMap = new LinkedHashMap<>();
+		LinkedHashMap<String, Object> pollHashMap = new LinkedHashMap<>();
 		if(authenticationSuccess){
 			double rn = Math.random();
-			Poll poll_new = new Poll(Long.toHexString((long) ((rn * 987654) + poll_counter.incrementAndGet())), poll.getQuestion(), poll.getStarted_at(), poll.getExpired_at(), poll.getChoice(), mod_id);
+			String poll_id = Long.toHexString((long) ((rn * 987654) + poll_counter.incrementAndGet()));
+			Poll poll_new = new Poll(poll_id, poll.getQuestion(), poll.getStarted_at(), poll.getExpired_at(), poll.getChoice(), mod_id);
 			int[] temp = new int[poll.getChoice().length]; 
 			poll_new.setResults(temp);
-			System.out.println("poll repo:-------------- "+pollRepository);
+		//	System.out.println("poll repo:-------------- "+pollRepository);
 			pollRepository.save(poll_new);
 			
-			Poll pollTemp = pollRepository.findById(poll.getId());
+			Poll pollTemp = pollRepository.findById(poll_id);
 			if(pollTemp!= null){
 				pollHashMap.put("id", pollTemp.getId());
 				pollHashMap.put("question", pollTemp.getQuestion());
 				pollHashMap.put("strated_id", pollTemp.getStarted_at());
 				pollHashMap.put("expired_at", pollTemp.getExpired_at());
 				pollHashMap.put("choice", pollTemp.getChoice());
-				return new ResponseEntity<LinkedHashMap>(pollHashMap, HttpStatus.CREATED);
+				return new ResponseEntity<LinkedHashMap<String, Object>>(pollHashMap, HttpStatus.CREATED);
 			}
 		}
-		return new ResponseEntity<LinkedHashMap>(HttpStatus.BAD_REQUEST);
+		return new ResponseEntity<LinkedHashMap<String, Object>>(HttpStatus.BAD_REQUEST);
 	}
 	
 	/** This method searches a poll.
@@ -164,9 +170,9 @@ public class ApplicationController {
 	 * @return Poll
 	 */
 	@RequestMapping(value="/polls/{poll_id}", method=RequestMethod.GET, produces = "application/json")
-	public ResponseEntity<LinkedHashMap> searchPollWithoutResult(@PathVariable("poll_id") String poll_id){
+	public ResponseEntity<LinkedHashMap<String, Object>> searchPollWithoutResult(@PathVariable("poll_id") String poll_id){
 		System.out.println("Searching a poll without results");
-		LinkedHashMap pollHashMap = new LinkedHashMap<>();
+		LinkedHashMap<String, Object> pollHashMap = new LinkedHashMap<>();
 		Poll pollTemp = pollRepository.findById(poll_id);
 		if(pollTemp != null){
 			pollHashMap.put("id", pollTemp.getId());
@@ -174,7 +180,7 @@ public class ApplicationController {
 			pollHashMap.put("started_at", pollTemp.getStarted_at());
 			pollHashMap.put("expired_at", pollTemp.getExpired_at());
 			pollHashMap.put("choice", pollTemp.getChoice());
-			return new ResponseEntity<LinkedHashMap>(pollHashMap, HttpStatus.OK);
+			return new ResponseEntity<LinkedHashMap<String, Object>>(pollHashMap, HttpStatus.OK);
 		}
 		return null;
 	}
@@ -271,4 +277,68 @@ public class ApplicationController {
 		}
 		return false;
 	}
+
+	
+	@Scheduled(fixedRate = 30000)
+    public void checkPollExpiration() {
+		System.out.println("Checking for poll expiration...");
+		List<Poll> expiredPollList = new ArrayList<Poll>();
+		expiredPollList = getExpiredPollList();
+//		try{
+		if(expiredPollList.isEmpty()){
+			System.out.println("No polls are expired yet!");
+		}
+		else{
+			for(Poll poll:expiredPollList){
+				String pollResult = "";
+				for(int i=0;i<poll.getResults().length;i++){
+					pollResult += poll.getChoice()[i] + "=" + poll.getResults()[i];
+					if(i != pollResult.length()-1){
+						pollResult += ", ";
+					}
+				}
+				Moderator moderator = moderatorRespository.findById(poll.getModeratorId());
+				if(!poll.isMailSent()){
+					String msg = moderator.getEmail() + ":" + "010038847" + ":" + "Poll Result [" + pollResult + "]";
+					System.out.println(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"+msg);
+					kafkaProducer.sendMessage(msg);
+					poll.setMailSent(true);
+					pollRepository.save(poll);
+					System.out.println("Mail sent...");
+				}
+				else{
+					System.out.println("Email has been sent already!");
+				}
+			}
+	//	}
+		}
+/*		catch(Exception e){
+			e.printStackTrace();
+		}
+*/    }
+	
+	public List<Poll> getExpiredPollList(){
+		System.out.println("In expired poll list method...");
+		ArrayList<Poll> pollList = (ArrayList<Poll>) pollRepository.findAll();
+		List<Poll> expiredPollList = new ArrayList<Poll>();
+		Date pollDate = null;
+		Date currentDate = new Date();
+		
+			for(Poll currentPoll:pollList){
+				String expiredDate = currentPoll.getExpired_at();
+				try {
+					pollDate = sdf2.parse(expiredDate);
+				}
+				catch (ParseException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				if(currentDate.compareTo(pollDate) == 1){
+					expiredPollList.add(currentPoll);
+				}
+			}
+		System.out.println("expired poll count: "+expiredPollList.size());
+		return expiredPollList;
+	}
+	
 }

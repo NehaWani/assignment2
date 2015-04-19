@@ -19,7 +19,7 @@ apply plugin: 'io.spring.dependency-management'
 
 jar {
     baseName = 'myvote'
-    version = '0.2.0'
+    version = '0.1.0'
 }
 sourceCompatibility = 1.7
 targetCompatibility = 1.7
@@ -32,8 +32,13 @@ repositories {
 dependencies {
     compile("org.springframework.boot:spring-boot-starter-data-mongodb")
     compile("org.springframework.boot:spring-boot-starter-data-rest")
-   
-    testCompile("org.springframework.boot:spring-boot-starter-test") 
+    testCompile("org.springframework.boot:spring-boot-starter-test")
+    compile("org.apache.kafka:kafka_2.10:0.8.2.1")
+	compile("org.springframework:spring-context-support:4.1.5.RELEASE") 
+}
+
+configurations.all{
+	exclude module: 'slf4j-log4j12'
 }
 
 eclipse {

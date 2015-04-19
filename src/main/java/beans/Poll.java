@@ -31,6 +31,8 @@ public class Poll {
 	private int[] results;
 	@JsonIgnore
 	private int moderatorId;
+	@JsonIgnore
+	private boolean mailSent;
 
 	public String getId() {
 		return id;
@@ -68,18 +70,23 @@ public class Poll {
 	public void setResults(int[] results) {
 		this.results = results;
 	}
-	
 	public int getModeratorId() {
 		return moderatorId;
 	}
 	public void setModeratorId(int moderatorId) {
 		this.moderatorId = moderatorId;
 	}
+	public boolean isMailSent() {
+		return mailSent;
+	}
+	public void setMailSent(boolean mailSent) {
+		this.mailSent = mailSent;
+	}
 	
 	public Poll() {
 		super();
 	}
-	
+
 	public Poll(String id, String question, String started_at, String expired_at, String[] choice, int[] results) {
 		super();
 		this.id = id;
